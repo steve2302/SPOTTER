@@ -73,6 +73,14 @@ namespace SPOTTER.Controllers
         private const int NMEA_READ_TIMEOUT_MS = 2000;
         private const int SCAN_RETRY_DELAY_MS = 5000;
 
+        /// <summary>
+        /// When set, this port is tried first before the full auto-scan.
+        /// Use for devices like the Panasonic FZ-G1 where the u-blox GPS is on a known
+        /// port (COM5) but may be skipped during auto-scan if the Windows sensor driver
+        /// holds the port briefly on first access.
+        /// </summary>
+        public string PreferredPort { get; set; }
+
         public GPSController()
         {
             CurrentLocation = new LocationData();
@@ -179,10 +187,28 @@ namespace SPOTTER.Controllers
         {
             Debug.WriteLine("=== Starting GPS Port Scan ===");
 
+            // If a preferred port is configured, try it first
+            if (!string.IsNullOrWhiteSpace(PreferredPort))
+            {
+                Debug.WriteLine($"==> Trying preferred port: {PreferredPort}");
+                int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
+                foreach (int baudRate in baudRates)
+                {
+                    if (cancellationToken.IsCancellationRequested) return false;
+                    if (await TestPort(PreferredPort, baudRate, cancellationToken))
+                    {
+                        OnStatusChanged($"GPS found on {PreferredPort} at {baudRate} baud");
+                        return true;
+                    }
+                }
+                Debug.WriteLine($"    Preferred port {PreferredPort} not available — falling back to full scan");
+            }
+
             // Get available ports and clean them
             string[] availablePorts = SerialPort.GetPortNames()
                 .Select(p => p.Trim())
                 .Where(p => !string.IsNullOrWhiteSpace(p))
+                .Where(p => !string.Equals(p, PreferredPort, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(p => p)
                 .ToArray();
 
@@ -452,6 +478,7 @@ namespace SPOTTER.Controllers
             if (sentence.StartsWith("$GPGGA") || sentence.StartsWith("$GPRMC") ||
                 sentence.StartsWith("$GPGSA") || sentence.StartsWith("$GPGSV") ||
                 sentence.StartsWith("$GNGGA") || sentence.StartsWith("$GNRMC") ||
+                sentence.StartsWith("$GNGSA") || sentence.StartsWith("$GNGSV") ||
                 sentence.StartsWith("$GLGSA") || sentence.StartsWith("$GLGSV"))
             {
                 return true;

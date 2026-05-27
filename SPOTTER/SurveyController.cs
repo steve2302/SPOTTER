@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Configuration;
 using System.IO;
 //using System.Device.Location;
 using SPOTTER.Models;
@@ -39,6 +40,9 @@ namespace SPOTTER.Controllers
             _sessionInfo = new SessionInfo();
             _controllerSettings = new ControllerSettings();
             _gpsController = new GPSController();
+            string preferredPort = ConfigurationManager.AppSettings["GpsPreferredPort"];
+            if (!string.IsNullOrWhiteSpace(preferredPort))
+                _gpsController.PreferredPort = preferredPort;
             _gameController = new GameControllerHandler(_controllerSettings);
             _fileController = new FileController();
 
