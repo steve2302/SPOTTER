@@ -13,7 +13,7 @@ namespace SPOTTER
     {
         private float _heading;
         private Color _color;
-        private static Bitmap _aircraftIcon;
+        //private static Bitmap _aircraftIcon;
 
         public GMarkerAircraft(PointLatLng p, float heading = 0, Color? color = null)
             : base(p)

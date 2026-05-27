@@ -187,11 +187,13 @@ namespace SPOTTER.Controllers
         {
             Debug.WriteLine("=== Starting GPS Port Scan ===");
 
+            // Common GPS baud rates used for testing
+            int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
+
             // If a preferred port is configured, try it first
             if (!string.IsNullOrWhiteSpace(PreferredPort))
             {
                 Debug.WriteLine($"==> Trying preferred port: {PreferredPort}");
-                int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
                 foreach (int baudRate in baudRates)
                 {
                     if (cancellationToken.IsCancellationRequested) return false;
@@ -226,8 +228,7 @@ namespace SPOTTER.Controllers
                 Debug.WriteLine($"  - {port}");
             }
 
-            // Try common GPS baud rates
-            int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
+            // Try common GPS baud rates (already declared above)
 
             // Test each available port directly
             foreach (string portName in availablePorts)
