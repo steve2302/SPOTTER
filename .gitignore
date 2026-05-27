@@ -1,0 +1,37 @@
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Build
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Rider
+.idea/
+
+# NuGet
+*.nupkg
+packages/
+*.snupkg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Resharper
+_ReSharper*/
+*.DotSettings.user
+
+# VS Code
+.vscode/
+
+# User secrets
+secrets.json
