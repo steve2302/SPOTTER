@@ -81,6 +81,7 @@ namespace SPOTTER
         private Label lblHeroFreshnessDot;
         private Label lblHeroFreshness;
         private CountTile heroCountTile;
+        private CountTile heroLastInputTile;
         private Label lblHeroSpeciesLabel;
         private Label lblHeroSpecies;          // replaces the role of lblLastObservation
         private Label lblHeroDistanceLabel;
@@ -598,11 +599,17 @@ namespace SPOTTER
                     new Point(this.lblHeroFreshness.Left - 14, 13);
             };
 
-            // Row 1: count tile + species
+            // Row 1: count tile + last-input tile + species
             this.heroCountTile = new CountTile
             {
                 Location = new Point(24, 44),
                 Value = "—"
+            };
+            this.heroLastInputTile = new CountTile
+            {
+                Location = new Point(24 + Theme.CountTileSize + 8, 44),
+                Value = "—",
+                Caption = "LAST"
             };
             this.lblHeroSpeciesLabel = new Label
             {
@@ -610,7 +617,7 @@ namespace SPOTTER
                 Font = Theme.Caption(),
                 ForeColor = Theme.TextTertiary,
                 AutoSize = true,
-                Location = new Point(24 + Theme.CountTileSize + 18, 50),
+                Location = new Point(24 + Theme.CountTileSize * 2 + 26, 50),
                 BackColor = Color.Transparent
             };
             this.lblHeroSpecies = new Label
@@ -619,7 +626,7 @@ namespace SPOTTER
                 Font = Theme.HeroSpecies(),
                 ForeColor = Theme.TextPrimary,
                 AutoSize = true,
-                Location = new Point(24 + Theme.CountTileSize + 18, 68),
+                Location = new Point(24 + Theme.CountTileSize * 2 + 26, 68),
                 BackColor = Color.Transparent
             };
             // Keep the public name lblLastObservation pointed at the hero species label
@@ -653,6 +660,7 @@ namespace SPOTTER
             this.pnlHero.Controls.Add(this.lblHeroFreshnessDot);
             this.pnlHero.Controls.Add(this.lblHeroFreshness);
             this.pnlHero.Controls.Add(this.heroCountTile);
+            this.pnlHero.Controls.Add(this.heroLastInputTile);
             this.pnlHero.Controls.Add(this.lblHeroSpeciesLabel);
             this.pnlHero.Controls.Add(this.lblHeroSpecies);
             this.pnlHero.Controls.Add(this.heroDistancePill);

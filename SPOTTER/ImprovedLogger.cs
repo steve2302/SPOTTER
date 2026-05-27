@@ -729,6 +729,16 @@ namespace SPOTTER
             {
                 _heroCountSum = 0;
                 heroCountTile.Value = "0";
+                heroLastInputTile.Value = "—";
+
+                // Show the value that triggered this record in the species placeholder
+                string[] recParts = message.Split(',');
+                string trigger = recParts.Length > 0 ? recParts[recParts.Length - 1].Trim() : "";
+                lblHeroSpecies.Text = !string.IsNullOrEmpty(trigger)
+                    ? char.ToUpper(trigger[0]) + trigger.Substring(1)
+                    : "—";
+                MarkObservationFresh();
+                return;
             }
 
             string[] parts = message.Split(',');
@@ -741,6 +751,7 @@ namespace SPOTTER
             {
                 _heroCountSum += count;
                 heroCountTile.Value = _heroCountSum.ToString();
+                heroLastInputTile.Value = count.ToString();
                 MarkObservationFresh();
                 return;
             }
@@ -762,6 +773,7 @@ namespace SPOTTER
             {
                 _heroCountSum += wordCount;
                 heroCountTile.Value = _heroCountSum.ToString();
+                heroLastInputTile.Value = wordCount.ToString();
                 MarkObservationFresh();
                 return;
             }

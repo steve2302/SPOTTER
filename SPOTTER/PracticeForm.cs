@@ -5,13 +5,15 @@ using System.Linq;
 using System.Windows.Forms;
 using SPOTTER.Controllers;
 using SPOTTER.Models;
-using SharpDX.XInput;
 
 namespace SPOTTER
 {
     /// <summary>
-    /// Practice form for training users on gamepad controller usage
-    /// Simulates aerial survey observations without requiring GPS
+    /// Practice form for training users on gamepad controller usage.
+    /// Voice is the primary cue — the audio label is spoken aloud when each
+    /// target appears so the user must match button-to-sound from memory.
+    /// Buttons that record the same data (e.g. DPad and Left Thumbstick
+    /// directions) are treated as fully equivalent correct answers.
     /// </summary>
     public partial class PracticeForm : Form
     {
@@ -22,6 +24,7 @@ namespace SPOTTER
 
         // UI Controls
         private Panel _targetPanel;
+        private Label _voiceHintLabel;
         private Label _targetLabel;
         private Label _instructionLabel;
         private Label _scoreLabel;
@@ -50,82 +53,101 @@ namespace SPOTTER
         private int _bestStreak = 0;
         private List<double> _responseTimes = new List<double>();
         private int _level = 1;
-        private int _timeLimit = 5000; // milliseconds
+        private int _timeLimit = 5000;
         private Random _random = new Random();
 
-        // Difficulty settings
         private Dictionary<string, int> _difficultyTimeLimits = new Dictionary<string, int>
         {
-            { "Easy", 8000 },
+            { "Easy",   8000 },
             { "Medium", 5000 },
-            { "Hard", 3000 },
+            { "Hard",   3000 },
             { "Expert", 2000 }
         };
 
-        // Target definitions — populated from GamepadAudioConfig.csv at startup
+        // key = audio label (spoken text), value = expected recorded response (",<data>")
+        // One entry per unique recorded value — equivalent buttons (DPad / Left Stick) share one entry.
         private Dictionary<string, string> _targets = new Dictionary<string, string>();
         private GamepadAudioConfig _audioConfig;
 
         public PracticeForm(ControllerSettings settings)
         {
             _settings = settings;
+
             _audioConfig = new GamepadAudioConfig();
             if (_audioConfig.LoadFromFile())
                 LoadTargetsFromConfig();
             else
                 LoadDefaultTargets();
+
             InitializeComponent();
             InitializeController();
         }
 
+        // ----------------------------------------------------------------
+        // Target loading
+        // ----------------------------------------------------------------
+
         private void LoadTargetsFromConfig()
         {
             _targets.Clear();
+            var seenResponses = new HashSet<string>();
             var skipButtons = new HashSet<string> { "Start_On", "Start_Off" };
+
             foreach (var kvp in _audioConfig.GetAllMappings())
             {
                 string button = kvp.Key;
                 if (skipButtons.Contains(button)) continue;
+
                 string audioText = kvp.Value;
+                if (string.IsNullOrWhiteSpace(audioText) || audioText == "not configured") continue;
+
                 string recordedData = _audioConfig.GetRecordedData(button);
                 if (string.IsNullOrWhiteSpace(recordedData) || recordedData == "NA") continue;
-                if (audioText == "not configured") continue;
-                _targets[button + " (" + audioText + ")"] = "," + recordedData;
+
+                string expectedResponse = "," + recordedData;
+
+                // seenResponses.Add returns false when already present — skip duplicates so that
+                // equivalent buttons (e.g. DPadUp and LeftThumbUp) appear only once in the game.
+                if (seenResponses.Add(expectedResponse))
+                    _targets[audioText] = expectedResponse;
             }
+
             if (_targets.Count == 0)
                 LoadDefaultTargets();
         }
 
         private void LoadDefaultTargets()
         {
-            _targets["A Button (1)"]                      = ",1";
-            _targets["B Button (2)"]                      = ",2";
-            _targets["Y Button (3)"]                      = ",3";
-            _targets["X Button (4)"]                      = ",4";
-            _targets["Left Shoulder (Goat)"]              = ",goat";
-            _targets["Right Shoulder (Glare)"]            = ",glare";
-            _targets["D-Pad Up (Blue 100-200m)"]          = ",(blue) 100-200";
-            _targets["D-Pad Left (Green 50-100m)"]        = ",(green) 50-100";
-            _targets["D-Pad Down (Yellow 0-50m)"]         = ",(yellow) 0-50";
-            _targets["D-Pad Right (Black 200-300m)"]      = ",(black) 200-300";
-            _targets["Left Trigger (Grey Kangaroo)"]      = ",grey_kangaroo";
-            _targets["Right Trigger (Red Kangaroo)"]      = ",red_kangaroo";
-            _targets["Back Button (Delete last record)"]  = ",delete_last_record";
+            _targets["1"]                         = ",1";
+            _targets["2"]                         = ",2";
+            _targets["3"]                         = ",3";
+            _targets["4"]                         = ",4";
+            _targets["Goat"]                      = ",goat";
+            _targets["Glare"]                     = ",glare";
+            _targets["100 to 200 metres"]         = ",(blue) 100-200";
+            _targets["50 to 100 metres"]          = ",(green) 50-100";
+            _targets["0 to 50 metres"]            = ",(yellow) 0-50";
+            _targets["200 to 300 metres"]         = ",(black) 200-300";
+            _targets["Grey Kangaroo"]             = ",grey_kangaroo";
+            _targets["Red Kangaroo"]              = ",red_kangaroo";
+            _targets["Delete last record"]        = ",delete_last_record";
         }
+
+        // ----------------------------------------------------------------
+        // UI construction
+        // ----------------------------------------------------------------
 
         private void InitializeComponent()
         {
             this.SuspendLayout();
 
-            // Form properties
-            this.Text = "Practice Mode - Aerial Survey Logger";
+            this.Text = "Practice Mode — Aerial Survey Logger";
             this.Size = new Size(1000, 750);
             this.StartPosition = FormStartPosition.CenterScreen;
             this.BackColor = Color.FromArgb(240, 240, 240);
             this.FormBorderStyle = FormBorderStyle.FixedDialog;
             this.MaximizeBox = false;
 
-            // Title
             Label titleLabel = new Label
             {
                 Text = "Practice Mode",
@@ -136,23 +158,22 @@ namespace SPOTTER
             };
             this.Controls.Add(titleLabel);
 
-            // Instructions
             _instructionLabel = new Label
             {
-                Text = "Select difficulty and mode, then press Start to begin training!",
-                Font = new Font("Segoe UI", 12),
+                Text = "Select difficulty, then press Start. Listen to the voice prompt and press the matching button.",
+                Font = new Font("Segoe UI", 11),
                 ForeColor = Color.FromArgb(80, 80, 80),
                 AutoSize = false,
-                Size = new Size(960, 60),
+                Size = new Size(960, 50),
                 Location = new Point(20, 70),
                 TextAlign = ContentAlignment.TopLeft
             };
             this.Controls.Add(_instructionLabel);
 
-            // Settings Panel
+            // Settings row
             Panel settingsPanel = new Panel
             {
-                Location = new Point(20, 140),
+                Location = new Point(20, 130),
                 Size = new Size(960, 60),
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
@@ -175,7 +196,7 @@ namespace SPOTTER
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
             _difficultyCombo.Items.AddRange(new object[] { "Easy", "Medium", "Hard", "Expert" });
-            _difficultyCombo.SelectedIndex = 1; // Medium
+            _difficultyCombo.SelectedIndex = 1;
             settingsPanel.Controls.Add(_difficultyCombo);
 
             _startButton = new Button
@@ -224,39 +245,48 @@ namespace SPOTTER
 
             this.Controls.Add(settingsPanel);
 
-            // Target Panel (main game area)
+            // Target panel — voice hint sits above the main label
             _targetPanel = new Panel
             {
-                Location = new Point(20, 220),
-                Size = new Size(960, 300),
+                Location = new Point(20, 210),
+                Size = new Size(960, 310),
                 BackColor = Color.White,
                 BorderStyle = BorderStyle.FixedSingle
             };
 
+            _voiceHintLabel = new Label
+            {
+                Text = "TARGET",
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                ForeColor = Color.FromArgb(160, 160, 160),
+                AutoSize = true,
+                Location = new Point(10, 14)
+            };
+            _targetPanel.Controls.Add(_voiceHintLabel);
+
             _targetLabel = new Label
             {
                 Text = "Ready",
-                Font = new Font("Segoe UI", 36, FontStyle.Bold),
+                Font = new Font("Segoe UI", 42, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 120, 215),
                 AutoSize = false,
-                Size = new Size(940, 200),
-                Location = new Point(10, 50),
+                Size = new Size(940, 210),
+                Location = new Point(10, 38),
                 TextAlign = ContentAlignment.MiddleCenter
             };
             _targetPanel.Controls.Add(_targetLabel);
 
             _timeBar = new ProgressBar
             {
-                Location = new Point(10, 260),
+                Location = new Point(10, 265),
                 Size = new Size(940, 30),
-                Style = ProgressBarStyle.Continuous,
-                ForeColor = Color.FromArgb(0, 200, 0)
+                Style = ProgressBarStyle.Continuous
             };
             _targetPanel.Controls.Add(_timeBar);
 
             this.Controls.Add(_targetPanel);
 
-            // Stats Panel
+            // Stats panel
             _statsPanel = new Panel
             {
                 Location = new Point(20, 540),
@@ -286,7 +316,7 @@ namespace SPOTTER
 
         private void AddStatLabel(string title, ref Label valueLabel, string initialValue, Point location)
         {
-            Label titleLabel = new Label
+            var titleLabel = new Label
             {
                 Text = title,
                 Font = new Font("Segoe UI", 10, FontStyle.Bold),
@@ -307,6 +337,10 @@ namespace SPOTTER
             _statsPanel.Controls.Add(valueLabel);
         }
 
+        // ----------------------------------------------------------------
+        // Controller
+        // ----------------------------------------------------------------
+
         private void InitializeController()
         {
             try
@@ -316,10 +350,8 @@ namespace SPOTTER
                 _controller.ObservationRecorded += Controller_ObservationRecorded;
                 _controller.ControllerConnectionChanged += Controller_ConnectionChanged;
 
-                // Update initial connection status
                 UpdateControllerStatus(_controller.IsConnected);
 
-                // Controller polling timer
                 _controllerTimer = new Timer { Interval = 50 };
                 _controllerTimer.Tick += (s, e) => _controller?.Update();
                 _controllerTimer.Start();
@@ -352,25 +384,26 @@ namespace SPOTTER
         private void UpdateControllerStatus(bool isConnected)
         {
             _controllerStatusLabel.Text = isConnected ? "Connected" : "Not Connected";
-            _controllerStatusLabel.ForeColor = isConnected ?
-                Color.FromArgb(0, 150, 0) : Color.FromArgb(220, 53, 69);
+            _controllerStatusLabel.ForeColor = isConnected
+                ? Color.FromArgb(0, 150, 0)
+                : Color.FromArgb(220, 53, 69);
         }
 
         private void Controller_KeyPressed(object sender, string key)
         {
             if (_gameActive && !_gamePaused)
-            {
                 CheckResponse(key);
-            }
         }
 
         private void Controller_ObservationRecorded(object sender, string observation)
         {
             if (_gameActive && !_gamePaused)
-            {
                 CheckResponse(observation);
-            }
         }
+
+        // ----------------------------------------------------------------
+        // Game flow
+        // ----------------------------------------------------------------
 
         private void StartButton_Click(object sender, EventArgs e)
         {
@@ -380,7 +413,6 @@ namespace SPOTTER
                     "No Controller", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
-
             StartGame();
         }
 
@@ -396,7 +428,6 @@ namespace SPOTTER
             _responseTimes.Clear();
             _level = 1;
 
-            // Get time limit based on difficulty
             _timeLimit = _difficultyTimeLimits[_difficultyCombo.SelectedItem.ToString()];
 
             _startButton.Enabled = false;
@@ -409,7 +440,6 @@ namespace SPOTTER
             UpdateStats();
             ShowNextTarget();
 
-            // Start game timer
             _gameTimer = new Timer { Interval = 100 };
             _gameTimer.Tick += GameTimer_Tick;
             _gameTimer.Start();
@@ -417,10 +447,8 @@ namespace SPOTTER
 
         private void PauseButton_Click(object sender, EventArgs e)
         {
-            if (_gamePaused)
-                ResumeGame();
-            else
-                PauseGame();
+            if (_gamePaused) ResumeGame();
+            else             PauseGame();
         }
 
         private void PauseGame()
@@ -437,7 +465,7 @@ namespace SPOTTER
         {
             _gamePaused = false;
             _pauseButton.Text = "Pause";
-            _targetStartTime = DateTime.Now; // Reset timer
+            _targetStartTime = DateTime.Now;
             _controllerTimer?.Start();
             _gameTimer?.Start();
             ShowNextTarget();
@@ -462,46 +490,44 @@ namespace SPOTTER
         {
             if (!_gameActive || _gamePaused) return;
 
-            // Get random target
             var targetList = _targets.ToList();
-            var targetIndex = _random.Next(targetList.Count);
-            var target = targetList[targetIndex];
+            var target = targetList[_random.Next(targetList.Count)];
 
-            _currentTarget = target.Key;
-            _expectedResponse = target.Value;
+            _currentTarget = target.Key;       // audio label — what is spoken
+            _expectedResponse = target.Value;  // ",<recordedData>" — what any matching button produces
 
-            // Update display
+            // Display the audio label (not the button name — that would give it away)
             _targetLabel.Text = _currentTarget;
             _targetLabel.ForeColor = Color.FromArgb(0, 120, 215);
+            _voiceHintLabel.Text = "VOICE PROMPT";
+            _voiceHintLabel.ForeColor = Color.FromArgb(160, 160, 160);
             _targetStartTime = DateTime.Now;
             _timeBar.Value = 100;
 
-            // Update instruction
-            _instructionLabel.Text = "Press the correct button quickly! Level " + _level + " - Time Limit: " + (_timeLimit / 1000.0).ToString("F1") + "s";
+            _instructionLabel.Text =
+                "Press the matching button — " +
+                "Level " + _level + "  |  Time limit: " + (_timeLimit / 1000.0).ToString("F1") + "s";
         }
 
         private void GameTimer_Tick(object sender, EventArgs e)
         {
             if (!_gameActive || _gamePaused) return;
 
-            double elapsed = (DateTime.Now - _targetStartTime).TotalMilliseconds;
+            double elapsed   = (DateTime.Now - _targetStartTime).TotalMilliseconds;
             double remaining = _timeLimit - elapsed;
 
             if (remaining <= 0)
             {
-                // Time's up - wrong answer
-                HandleIncorrectResponse();
+                HandleTimeout();
             }
             else
             {
-                // Update progress bar
                 _timeBar.Value = (int)((remaining / _timeLimit) * 100);
 
-                // Change colour based on time remaining
                 if (remaining < _timeLimit * 0.3)
-                    _targetLabel.ForeColor = Color.FromArgb(220, 53, 69); // Red
+                    _targetLabel.ForeColor = Color.FromArgb(220, 53, 69);
                 else if (remaining < _timeLimit * 0.6)
-                    _targetLabel.ForeColor = Color.FromArgb(255, 165, 0); // Orange
+                    _targetLabel.ForeColor = Color.FromArgb(255, 165, 0);
             }
         }
 
@@ -512,6 +538,8 @@ namespace SPOTTER
             double responseTime = (DateTime.Now - _targetStartTime).TotalMilliseconds;
             _totalResponses++;
 
+            // Any button that records the same data as the target is a correct answer —
+            // this automatically handles equivalent inputs (DPad / Left Thumbstick, etc.)
             if (response == _expectedResponse)
             {
                 _correctResponses++;
@@ -521,32 +549,35 @@ namespace SPOTTER
 
                 _responseTimes.Add(responseTime);
 
-                // Calculate score (faster = more points)
-                int basePoints = 100;
-                int timeBonus = (int)((1.0 - (responseTime / _timeLimit)) * 100);
+                int basePoints  = 100;
+                int timeBonus   = (int)((1.0 - (responseTime / _timeLimit)) * 100);
                 int streakBonus = Math.Min(_currentStreak * 10, 100);
-                int points = basePoints + timeBonus + streakBonus;
+                int points      = basePoints + timeBonus + streakBonus;
                 _score += points;
 
-                _targetLabel.Text = "CORRECT! +" + points;
-                _targetLabel.ForeColor = Color.FromArgb(0, 200, 0);
+                _targetLabel.Text      = "CORRECT!  +" + points;
+                _targetLabel.ForeColor = Color.FromArgb(0, 180, 0);
+                _voiceHintLabel.Text   = "";
 
-                // Level up every 10 correct responses
                 if (_correctResponses % 10 == 0)
                 {
                     _level++;
-                    _timeLimit = Math.Max(1000, _timeLimit - 200); // Decrease time, minimum 1s
+                    _timeLimit = Math.Max(1000, _timeLimit - 200);
                 }
             }
             else
             {
-                HandleIncorrectResponse();
+                _currentStreak         = 0;
+                _targetLabel.Text      = "WRONG";
+                _targetLabel.ForeColor = Color.FromArgb(220, 53, 69);
+                _voiceHintLabel.Text   = "";
+                _score = Math.Max(0, _score - 50);
             }
 
             UpdateStats();
 
-            // Show next target after brief delay
-            Timer delayTimer = new Timer { Interval = 800 };
+            // Brief pause before showing the next target
+            var delayTimer = new Timer { Interval = 800 };
             delayTimer.Tick += (s, e) =>
             {
                 delayTimer.Stop();
@@ -556,53 +587,62 @@ namespace SPOTTER
             delayTimer.Start();
         }
 
-        private void HandleIncorrectResponse()
+        private void HandleTimeout()
         {
-            _currentStreak = 0;
+            _currentStreak         = 0;
             _totalResponses++;
-
-            _targetLabel.Text = "WRONG!";
+            _targetLabel.Text      = "TIME!";
             _targetLabel.ForeColor = Color.FromArgb(220, 53, 69);
-
-            // Penalty: -50 points (but don't go below 0)
+            _voiceHintLabel.Text   = "";
             _score = Math.Max(0, _score - 50);
 
             UpdateStats();
+
+            var delayTimer = new Timer { Interval = 800 };
+            delayTimer.Tick += (s, e) =>
+            {
+                delayTimer.Stop();
+                delayTimer.Dispose();
+                ShowNextTarget();
+            };
+            delayTimer.Start();
         }
 
         private void UpdateStats()
         {
-            _scoreLabel.Text = _score.ToString();
-            _levelLabel.Text = _level.ToString();
+            _scoreLabel.Text  = _score.ToString();
+            _levelLabel.Text  = _level.ToString();
             _streakLabel.Text = _currentStreak + " (Best: " + _bestStreak + ")";
 
-            double accuracy = _totalResponses > 0 ?
-                (_correctResponses * 100.0 / _totalResponses) : 0;
+            double accuracy = _totalResponses > 0
+                ? (_correctResponses * 100.0 / _totalResponses) : 0;
             _accuracyLabel.Text = accuracy.ToString("F1") + "%";
 
-            double avgTime = _responseTimes.Count > 0 ?
-                _responseTimes.Average() / 1000.0 : 0;
+            double avgTime = _responseTimes.Count > 0
+                ? _responseTimes.Average() / 1000.0 : 0;
             _responseTimeLabel.Text = avgTime.ToString("F2") + "s";
         }
 
         private void ShowGameSummary()
         {
-            double accuracy = _totalResponses > 0 ?
-                (_correctResponses * 100.0 / _totalResponses) : 0;
-            double avgTime = _responseTimes.Count > 0 ?
-                _responseTimes.Average() / 1000.0 : 0;
+            double accuracy = _totalResponses > 0
+                ? (_correctResponses * 100.0 / _totalResponses) : 0;
+            double avgTime = _responseTimes.Count > 0
+                ? _responseTimes.Average() / 1000.0 : 0;
 
-            string summary = "Game Complete!\n\n" +
-                "Final Score: " + _score + "\n" +
-                "Level Reached: " + _level + "\n" +
-                "Accuracy: " + accuracy.ToString("F1") + "% (" + _correctResponses + "/" + _totalResponses + ")\n" +
+            string summary =
+                "Game Complete!\n\n" +
+                "Final Score: "           + _score + "\n" +
+                "Level Reached: "         + _level + "\n" +
+                "Correct: "               + _correctResponses + " / " + _totalResponses + "\n" +
+                "Accuracy: "              + accuracy.ToString("F1") + "%\n" +
                 "Average Response Time: " + avgTime.ToString("F2") + "s\n" +
-                "Best Streak: " + _bestStreak + "\n\n" +
-                "Difficulty: " + _difficultyCombo.SelectedItem;
+                "Best Streak: "           + _bestStreak + "\n\n" +
+                "Difficulty: "            + _difficultyCombo.SelectedItem;
 
-            _targetLabel.Text = "Game Over!";
+            _targetLabel.Text      = "Game Over";
             _targetLabel.ForeColor = Color.FromArgb(0, 120, 215);
-            _instructionLabel.Text = "Click Start to play again!";
+            _instructionLabel.Text = "Click Start to play again.";
 
             MessageBox.Show(summary, "Practice Session Complete",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
