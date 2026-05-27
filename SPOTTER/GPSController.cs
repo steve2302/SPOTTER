@@ -768,8 +768,11 @@ namespace SPOTTER.Controllers
             if (decimalIndex < 0)
                 return 0;
 
-            // Heuristic: latitude uses 2 degree digits, longitude uses 3
-            int degreeDigits = (nmeaCoord.Length <= 9) ? 2 : 3;
+            // Latitude: DDMM.mmmm  → decimal at index 4 → 2 degree digits
+            // Longitude: DDDMM.mmmm → decimal at index 5 → 3 degree digits
+            // Use decimal position, not string length — GpsGate and some receivers
+            // emit extra decimal places which breaks a length-based heuristic.
+            int degreeDigits = (decimalIndex == 4) ? 2 : 3;
 
             string degreesPart = nmeaCoord.Substring(0, degreeDigits);
             string minutesPart = nmeaCoord.Substring(degreeDigits);
