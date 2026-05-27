@@ -40,25 +40,23 @@ namespace SPOTTER.Controllers
 
         private void GpsController_LocationUpdated(object sender, LocationData e)
         {
-            // Check if position has actually changed
-            if (HasPositionChanged(e))
+            // Reset staleness timer on every GPS data arrival, regardless of movement.
+            // Vibration should fire when the GPS signal is lost, not when the aircraft
+            // is stationary — position won't change on the ground but data is still flowing.
+            _lastPositionUpdate = DateTime.Now;
+            _lastLocationData = e;
+
+            // Only notify if we previously warned (state changed from not updating to updating)
+            if (_hasWarned)
             {
-                _lastPositionUpdate = DateTime.Now;
-                _lastLocationData = e;
+                _hasWarned = false;
 
-                // Only notify if we previously warned (state changed from not updating to updating)
-                if (_hasWarned)
+                GPSUpdateStatusChanged?.Invoke(this, new GPSUpdateStatusEventArgs
                 {
-                    _hasWarned = false;
-
-                    // Notify listeners position is updating normally
-                    GPSUpdateStatusChanged?.Invoke(this, new GPSUpdateStatusEventArgs
-                    {
-                        IsUpdating = true,
-                        TimeSinceLastUpdate = TimeSpan.Zero,
-                        Message = "GPS updating normally"
-                    });
-                }
+                    IsUpdating = true,
+                    TimeSinceLastUpdate = TimeSpan.Zero,
+                    Message = "GPS updating normally"
+                });
             }
         }
 
@@ -78,18 +76,6 @@ namespace SPOTTER.Controllers
                     Message = $"Warning: GPS position has not updated for {timeSinceUpdate.TotalSeconds:0} seconds"
                 });
             }
-        }
-
-        private bool HasPositionChanged(LocationData newData)
-        {
-            if (_lastLocationData == null) return true;
-
-            // Check if latitude or longitude has changed meaningfully
-            // Use a small threshold to account for minor GPS fluctuations
-            const double threshold = 0.0000001;
-
-            return Math.Abs(newData.Latitude - _lastLocationData.Latitude) > threshold ||
-                   Math.Abs(newData.Longitude - _lastLocationData.Longitude) > threshold;
         }
 
         /// <summary>
