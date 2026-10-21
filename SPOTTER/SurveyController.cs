@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Configuration;
 using System.IO;
+using System.Linq;
 //using System.Device.Location;
 using SPOTTER.Models;
 
@@ -40,9 +41,37 @@ namespace SPOTTER.Controllers
             _sessionInfo = new SessionInfo();
             _controllerSettings = new ControllerSettings();
             _gpsController = new GPSController();
-            string preferredPort = ConfigurationManager.AppSettings["GpsPreferredPort"];
-            if (!string.IsNullOrWhiteSpace(preferredPort))
-                _gpsController.PreferredPort = preferredPort;
+
+            // GPS source configuration.
+            // Preferred format: GpsPreferredPorts (comma-separated, in order) — the
+            // first entry is the primary and later entries are failover targets.
+            // Falls back to the legacy single-port GpsPreferredPort setting for
+            // existing installs. If both are empty, SPOTTER uses the full auto-scan.
+            string preferredPortsCsv = ConfigurationManager.AppSettings["GpsPreferredPorts"];
+            if (!string.IsNullOrWhiteSpace(preferredPortsCsv))
+            {
+                var ports = preferredPortsCsv
+                    .Split(',')
+                    .Select(p => p.Trim())
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .ToArray();
+                _gpsController.PreferredPorts = ports;
+            }
+            else
+            {
+                string preferredPort = ConfigurationManager.AppSettings["GpsPreferredPort"];
+                if (!string.IsNullOrWhiteSpace(preferredPort))
+                    _gpsController.PreferredPort = preferredPort;
+            }
+
+            // Watchdog: seconds of silence before failing over to the next port.
+            // 0 or less disables failover (stay on the current port indefinitely).
+            string failoverSecondsStr = ConfigurationManager.AppSettings["GpsFailoverSeconds"];
+            if (!string.IsNullOrWhiteSpace(failoverSecondsStr) &&
+                int.TryParse(failoverSecondsStr, out int failoverSeconds))
+            {
+                _gpsController.FailoverSeconds = failoverSeconds;
+            }
             _gameController = new GameControllerHandler(_controllerSettings);
             _fileController = new FileController();
 

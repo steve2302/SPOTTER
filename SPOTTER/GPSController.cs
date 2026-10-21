@@ -1,5 +1,6 @@
 ﻿using SPOTTER.Models;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
@@ -21,6 +22,15 @@ namespace SPOTTER.Controllers
         private string _connectedPort;
         private bool _isRunning;
         private DateTime _lastValidFix = DateTime.MinValue;
+
+        // Failover state: ordered list of preferred ports and the index of the
+        // one we most recently connected to (or tried). Advances by one every
+        // time the watchdog closes a port, so the next scan starts with the
+        // following entry (eg Bluetooth GPS after u-blox dropped).
+        private readonly object _preferredPortsLock = new object();
+        private List<string> _preferredPorts = new List<string>();
+        private int _preferredPortIndex = 0;
+        private DateTime _connectedAt = DateTime.MinValue;
 
         // NMEA parsing state
         private double _latitude;
@@ -74,12 +84,74 @@ namespace SPOTTER.Controllers
         private const int SCAN_RETRY_DELAY_MS = 5000;
 
         /// <summary>
-        /// When set, this port is tried first before the full auto-scan.
-        /// Use for devices like the Panasonic FZ-G1 where the u-blox GPS is on a known
-        /// port (COM5) but may be skipped during auto-scan if the Windows sensor driver
-        /// holds the port briefly on first access.
+        /// Legacy single-port accessor. Setting this REPLACES the preferred-ports list
+        /// with a single entry; getting it returns the first entry of the list, or null
+        /// when the list is empty. For multi-source configurations (eg u-blox + Bluetooth
+        /// GPS failover on the FZ-G1) use <see cref="PreferredPorts"/> instead.
         /// </summary>
-        public string PreferredPort { get; set; }
+        public string PreferredPort
+        {
+            get
+            {
+                lock (_preferredPortsLock)
+                    return _preferredPorts.Count > 0 ? _preferredPorts[0] : null;
+            }
+            set
+            {
+                lock (_preferredPortsLock)
+                {
+                    _preferredPorts.Clear();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        _preferredPorts.Add(value.Trim());
+                    _preferredPortIndex = 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Ordered list of ports to try before the full auto-scan. The first entry is
+        /// the primary source; subsequent entries are failover targets, each tried in
+        /// turn when the watchdog decides the current port has gone quiet. Case-insensitive
+        /// duplicates and blank entries are stripped. Example FZ-G1 configuration:
+        /// ["COM5", "COM10"] = u-blox first, then Bluetooth GPS pairing.
+        /// </summary>
+        public IReadOnlyList<string> PreferredPorts
+        {
+            get
+            {
+                lock (_preferredPortsLock)
+                    return _preferredPorts.ToArray();
+            }
+            set
+            {
+                lock (_preferredPortsLock)
+                {
+                    _preferredPorts.Clear();
+                    if (value != null)
+                    {
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var p in value)
+                        {
+                            if (string.IsNullOrWhiteSpace(p)) continue;
+                            string trimmed = p.Trim();
+                            if (seen.Add(trimmed))
+                                _preferredPorts.Add(trimmed);
+                        }
+                    }
+                    _preferredPortIndex = 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Seconds of silence (no valid NMEA fix) before the controller closes the
+        /// current port and tries the next <see cref="PreferredPorts"/> entry.
+        /// Set to 0 or less to disable the watchdog (SPOTTER stays on the current
+        /// port indefinitely). Default: 10 seconds.
+        /// Note: actual trigger latency is this value plus the port read timeout
+        /// (~2 s), because the watchdog is checked between reads.
+        /// </summary>
+        public int FailoverSeconds { get; set; } = 10;
 
         public GPSController()
         {
@@ -190,27 +262,60 @@ namespace SPOTTER.Controllers
             // Common GPS baud rates used for testing
             int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
 
-            // If a preferred port is configured, try it first
-            if (!string.IsNullOrWhiteSpace(PreferredPort))
+            // Snapshot the preferred-ports list and rotate it so that the entry we
+            // most recently failed over FROM is tried last. On the first scan after
+            // startup _preferredPortIndex is 0, so the list is tried in the user's
+            // configured order. After each watchdog event the index advances by one,
+            // which pushes the failed port to the back of the queue for the next scan.
+            List<string> preferredSnapshot;
+            int rotation;
+            lock (_preferredPortsLock)
             {
-                Debug.WriteLine($"==> Trying preferred port: {PreferredPort}");
+                preferredSnapshot = new List<string>(_preferredPorts);
+                rotation = preferredSnapshot.Count > 0
+                    ? ((_preferredPortIndex % preferredSnapshot.Count) + preferredSnapshot.Count) % preferredSnapshot.Count
+                    : 0;
+            }
+
+            var rotatedPreferred = new List<string>(preferredSnapshot.Count);
+            for (int i = 0; i < preferredSnapshot.Count; i++)
+                rotatedPreferred.Add(preferredSnapshot[(rotation + i) % preferredSnapshot.Count]);
+
+            // Try each preferred port in rotated order, at each baud rate
+            foreach (string preferred in rotatedPreferred)
+            {
+                Debug.WriteLine($"==> Trying preferred port: {preferred}");
                 foreach (int baudRate in baudRates)
                 {
                     if (cancellationToken.IsCancellationRequested) return false;
-                    if (await TestPort(PreferredPort, baudRate, cancellationToken))
+                    if (await TestPort(preferred, baudRate, cancellationToken))
                     {
-                        OnStatusChanged($"GPS found on {PreferredPort} at {baudRate} baud");
+                        // Record which configured entry we actually ended up on, so a
+                        // later failover advances past THIS one (not past whichever
+                        // entry happened to be at _preferredPortIndex at scan start).
+                        lock (_preferredPortsLock)
+                        {
+                            int idx = _preferredPorts.FindIndex(
+                                p => string.Equals(p, preferred, StringComparison.OrdinalIgnoreCase));
+                            if (idx >= 0) _preferredPortIndex = idx;
+                        }
+                        OnStatusChanged($"GPS found on {preferred} at {baudRate} baud");
                         return true;
                     }
                 }
-                Debug.WriteLine($"    Preferred port {PreferredPort} not available — falling back to full scan");
+                Debug.WriteLine($"    Preferred port {preferred} not available");
             }
 
-            // Get available ports and clean them
+            if (preferredSnapshot.Count > 0)
+                Debug.WriteLine("    No preferred port responded — falling back to full scan");
+
+            // Get available ports and clean them. Exclude everything already tried
+            // above as a preferred entry (not just the single legacy PreferredPort).
+            var preferredSet = new HashSet<string>(preferredSnapshot, StringComparer.OrdinalIgnoreCase);
             string[] availablePorts = SerialPort.GetPortNames()
                 .Select(p => p.Trim())
                 .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Where(p => !string.Equals(p, PreferredPort, StringComparison.OrdinalIgnoreCase))
+                .Where(p => !preferredSet.Contains(p))
                 .OrderBy(p => p)
                 .ToArray();
 
@@ -384,6 +489,11 @@ namespace SPOTTER.Controllers
                     _serialPort.Open();
                     _connectedPort = portName;
 
+                    // Reset watchdog state so the failover timer starts from the
+                    // moment this connection opened, not from an older session.
+                    _connectedAt = DateTime.UtcNow;
+                    _lastValidFix = DateTime.MinValue;
+
                     Debug.WriteLine($"        Fresh connection established to {portName}");
                     return true;
                 }
@@ -424,12 +534,31 @@ namespace SPOTTER.Controllers
 
 
         /// <summary>
-        /// Reads and processes NMEA data from the connected serial port
+        /// Reads and processes NMEA data from the connected serial port.
+        /// Also runs the failover watchdog: if <see cref="FailoverSeconds"/> seconds
+        /// pass with no valid fix (either because none has ever been received on this
+        /// connection, or because the stream went quiet mid-session), the method
+        /// advances the preferred-port index, closes the port, and returns. The
+        /// outer <see cref="ScanAndConnectGPS"/> loop then reconnects, starting with
+        /// the NEXT preferred port — eg Bluetooth GPS after the u-blox dropped.
         /// </summary>
         private async Task ReadNMEAData(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested && _serialPort != null && _serialPort.IsOpen)
             {
+                // Watchdog check: if more than FailoverSeconds have elapsed without
+                // a valid fix on this connection, give up on this port and let the
+                // outer scan loop try the next preferred source.
+                if (FailoverSeconds > 0 && ShouldFailover())
+                {
+                    string closingPort = _connectedPort;
+                    Debug.WriteLine($"GPS watchdog: {FailoverSeconds}s with no valid fix on {closingPort} — failing over");
+                    AdvancePreferredPortIndex();
+                    OnStatusChanged($"GPS silent on {closingPort} — switching source");
+                    CloseSerialPort();
+                    return;
+                }
+
                 try
                 {
                     string line = await Task.Run(() => _serialPort.ReadLine(), cancellationToken);
@@ -440,7 +569,7 @@ namespace SPOTTER.Controllers
                 }
                 catch (TimeoutException)
                 {
-                    // Normal timeout, continue reading
+                    // Normal timeout, continue reading (watchdog on next iteration)
                     continue;
                 }
                 catch (InvalidOperationException ex)
@@ -458,6 +587,34 @@ namespace SPOTTER.Controllers
                     Debug.WriteLine($"Unexpected error while reading NMEA data: {ex.Message}");
                     break;
                 }
+            }
+        }
+
+        /// <summary>
+        /// True when the watchdog should trigger a failover on the current connection.
+        /// Uses <see cref="_lastValidFix"/> when a fix has been seen on this connection;
+        /// otherwise uses <see cref="_connectedAt"/>, so a port that opens cleanly but
+        /// never emits a valid sentence is also abandoned after the grace period.
+        /// </summary>
+        private bool ShouldFailover()
+        {
+            if (_connectedAt == DateTime.MinValue) return false;
+            DateTime referenceTime = (_lastValidFix > _connectedAt) ? _lastValidFix : _connectedAt;
+            return (DateTime.UtcNow - referenceTime).TotalSeconds > FailoverSeconds;
+        }
+
+        /// <summary>
+        /// Advances <see cref="_preferredPortIndex"/> so that the next port scan
+        /// starts with the entry AFTER the one we just abandoned. No-op when there
+        /// is less than two preferred ports configured (in a single-port setup, the
+        /// index stays at 0 and the scan simply retries the same port).
+        /// </summary>
+        private void AdvancePreferredPortIndex()
+        {
+            lock (_preferredPortsLock)
+            {
+                if (_preferredPorts.Count > 1)
+                    _preferredPortIndex = (_preferredPortIndex + 1) % _preferredPorts.Count;
             }
         }
 
