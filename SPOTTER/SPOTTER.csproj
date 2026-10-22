@@ -197,6 +197,7 @@
     <Compile Include="GPSDiagnostics.cs" />
     <Compile Include="GPSMonitoringExtension.cs" />
     <Compile Include="GPSUIBridge.cs" />
+    <Compile Include="GpsLog.cs" />
     <Compile Include="SpotterMenuRenderer.cs" />
     <Compile Include="HelpForm.cs">
       <SubType>Form</SubType>

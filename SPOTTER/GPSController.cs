@@ -1,5 +1,6 @@
 ﻿using SPOTTER.Models;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
@@ -21,6 +22,15 @@ namespace SPOTTER.Controllers
         private string _connectedPort;
         private bool _isRunning;
         private DateTime _lastValidFix = DateTime.MinValue;
+
+        // Failover state: ordered list of preferred ports and the index of the
+        // one we most recently connected to (or tried). Advances by one every
+        // time the watchdog closes a port, so the next scan starts with the
+        // following entry (eg Bluetooth GPS after u-blox dropped).
+        private readonly object _preferredPortsLock = new object();
+        private List<string> _preferredPorts = new List<string>();
+        private int _preferredPortIndex = 0;
+        private DateTime _connectedAt = DateTime.MinValue;
 
         // NMEA parsing state
         private double _latitude;
@@ -73,29 +83,100 @@ namespace SPOTTER.Controllers
         private const int NMEA_READ_TIMEOUT_MS = 2000;
         private const int SCAN_RETRY_DELAY_MS = 5000;
 
+        // Minimum number of valid NMEA sentences a port must emit within the
+        // test window to be accepted. Was 2 — relaxed to 1 because Bluetooth
+        // SPP channels can take 1–3 s to negotiate after Open() and may only
+        // deliver one full sentence inside the 3 s test window. The read-loop
+        // watchdog (see FailoverSeconds) will catch a false-positive port
+        // that emitted a single $-prefixed burst then went silent, so lowering
+        // the acceptance bar is safe.
+        private const int MIN_VALID_NMEA_FOR_ACCEPT = 1;
+
         /// <summary>
-        /// When set, this port is tried first before the full auto-scan.
-        /// Use for devices like the Panasonic FZ-G1 where the u-blox GPS is on a known
-        /// port (COM5) but may be skipped during auto-scan if the Windows sensor driver
-        /// holds the port briefly on first access.
+        /// Legacy single-port accessor. Setting this REPLACES the preferred-ports list
+        /// with a single entry; getting it returns the first entry of the list, or null
+        /// when the list is empty. For multi-source configurations (eg u-blox + Bluetooth
+        /// GPS failover on the FZ-G1) use <see cref="PreferredPorts"/> instead.
         /// </summary>
-        public string PreferredPort { get; set; }
+        public string PreferredPort
+        {
+            get
+            {
+                lock (_preferredPortsLock)
+                    return _preferredPorts.Count > 0 ? _preferredPorts[0] : null;
+            }
+            set
+            {
+                lock (_preferredPortsLock)
+                {
+                    _preferredPorts.Clear();
+                    if (!string.IsNullOrWhiteSpace(value))
+                        _preferredPorts.Add(value.Trim());
+                    _preferredPortIndex = 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Ordered list of ports to try before the full auto-scan. The first entry is
+        /// the primary source; subsequent entries are failover targets, each tried in
+        /// turn when the watchdog decides the current port has gone quiet. Case-insensitive
+        /// duplicates and blank entries are stripped. Example FZ-G1 configuration:
+        /// ["COM5", "COM10"] = u-blox first, then Bluetooth GPS pairing.
+        /// </summary>
+        public IReadOnlyList<string> PreferredPorts
+        {
+            get
+            {
+                lock (_preferredPortsLock)
+                    return _preferredPorts.ToArray();
+            }
+            set
+            {
+                lock (_preferredPortsLock)
+                {
+                    _preferredPorts.Clear();
+                    if (value != null)
+                    {
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var p in value)
+                        {
+                            if (string.IsNullOrWhiteSpace(p)) continue;
+                            string trimmed = p.Trim();
+                            if (seen.Add(trimmed))
+                                _preferredPorts.Add(trimmed);
+                        }
+                    }
+                    _preferredPortIndex = 0;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Seconds of silence (no valid NMEA fix) before the controller closes the
+        /// current port and tries the next <see cref="PreferredPorts"/> entry.
+        /// Set to 0 or less to disable the watchdog (SPOTTER stays on the current
+        /// port indefinitely). Default: 10 seconds.
+        /// Note: actual trigger latency is this value plus the port read timeout
+        /// (~2 s), because the watchdog is checked between reads.
+        /// </summary>
+        public int FailoverSeconds { get; set; } = 10;
 
         public GPSController()
         {
             CurrentLocation = new LocationData();
 
             // Diagnostic: Show available COM ports
-            Debug.WriteLine("");
-            Debug.WriteLine("=== COM PORT DIAGNOSTIC ===");
+            GpsLog.WriteLine("");
+            GpsLog.WriteLine("=== COM PORT DIAGNOSTIC ===");
             string[] ports = SerialPort.GetPortNames();
-            Debug.WriteLine($"Windows sees {ports.Length} COM port(s):");
+            GpsLog.WriteLine($"Windows sees {ports.Length} COM port(s):");
             foreach (string port in ports)
             {
-                Debug.WriteLine($"  - {port}");
+                GpsLog.WriteLine($"  - {port}");
             }
-            Debug.WriteLine("=== END DIAGNOSTIC ===");
-            Debug.WriteLine("");
+            GpsLog.WriteLine("=== END DIAGNOSTIC ===");
+            GpsLog.WriteLine("");
         }
 
         /// <summary>
@@ -105,7 +186,7 @@ namespace SPOTTER.Controllers
         {
             if (_isRunning)
             {
-                Debug.WriteLine("GPS Controller already running");
+                GpsLog.WriteLine("GPS Controller already running");
                 return;
             }
 
@@ -114,7 +195,7 @@ namespace SPOTTER.Controllers
 
             OnStatusChanged("Scanning for GPS...");
 
-            Debug.WriteLine("=== GPS Controller Starting ===");
+            GpsLog.WriteLine("=== GPS Controller Starting ===");
 
             // Start GPS scanning and reading task
             _readTask = Task.Run(() => ScanAndConnectGPS(_cancellationTokenSource.Token), _cancellationTokenSource.Token);
@@ -137,7 +218,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error stopping GPS task: {ex.Message}");
+                GpsLog.WriteLine($"Error stopping GPS task: {ex.Message}");
             }
 
             CloseSerialPort();
@@ -158,7 +239,7 @@ namespace SPOTTER.Controllers
 
                     if (!connected)
                     {
-                        Debug.WriteLine($"GPS scan cycle complete - no GPS found. Retrying in {SCAN_RETRY_DELAY_MS / 1000} seconds...");
+                        GpsLog.WriteLine($"GPS scan cycle complete - no GPS found. Retrying in {SCAN_RETRY_DELAY_MS / 1000} seconds...");
                         OnStatusChanged("GPS not found - retrying...");
                         await Task.Delay(SCAN_RETRY_DELAY_MS, cancellationToken);
                         continue;
@@ -172,7 +253,7 @@ namespace SPOTTER.Controllers
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"Error reading GPS data: {ex.Message}");
+                    GpsLog.WriteLine($"Error reading GPS data: {ex.Message}");
                     CloseSerialPort();
                     OnStatusChanged("GPS connection lost - reconnecting...");
                     await Task.Delay(1000, cancellationToken);
@@ -185,47 +266,80 @@ namespace SPOTTER.Controllers
         /// </summary>
         private async Task<bool> TryFindGPS(CancellationToken cancellationToken)
         {
-            Debug.WriteLine("=== Starting GPS Port Scan ===");
+            GpsLog.WriteLine("=== Starting GPS Port Scan ===");
 
             // Common GPS baud rates used for testing
             int[] baudRates = { 4800, 9600, 19200, 38400, 115200 };
 
-            // If a preferred port is configured, try it first
-            if (!string.IsNullOrWhiteSpace(PreferredPort))
+            // Snapshot the preferred-ports list and rotate it so that the entry we
+            // most recently failed over FROM is tried last. On the first scan after
+            // startup _preferredPortIndex is 0, so the list is tried in the user's
+            // configured order. After each watchdog event the index advances by one,
+            // which pushes the failed port to the back of the queue for the next scan.
+            List<string> preferredSnapshot;
+            int rotation;
+            lock (_preferredPortsLock)
             {
-                Debug.WriteLine($"==> Trying preferred port: {PreferredPort}");
+                preferredSnapshot = new List<string>(_preferredPorts);
+                rotation = preferredSnapshot.Count > 0
+                    ? ((_preferredPortIndex % preferredSnapshot.Count) + preferredSnapshot.Count) % preferredSnapshot.Count
+                    : 0;
+            }
+
+            var rotatedPreferred = new List<string>(preferredSnapshot.Count);
+            for (int i = 0; i < preferredSnapshot.Count; i++)
+                rotatedPreferred.Add(preferredSnapshot[(rotation + i) % preferredSnapshot.Count]);
+
+            // Try each preferred port in rotated order, at each baud rate
+            foreach (string preferred in rotatedPreferred)
+            {
+                GpsLog.WriteLine($"==> Trying preferred port: {preferred}");
                 foreach (int baudRate in baudRates)
                 {
                     if (cancellationToken.IsCancellationRequested) return false;
-                    if (await TestPort(PreferredPort, baudRate, cancellationToken))
+                    if (await TestPort(preferred, baudRate, cancellationToken))
                     {
-                        OnStatusChanged($"GPS found on {PreferredPort} at {baudRate} baud");
+                        // Record which configured entry we actually ended up on, so a
+                        // later failover advances past THIS one (not past whichever
+                        // entry happened to be at _preferredPortIndex at scan start).
+                        lock (_preferredPortsLock)
+                        {
+                            int idx = _preferredPorts.FindIndex(
+                                p => string.Equals(p, preferred, StringComparison.OrdinalIgnoreCase));
+                            if (idx >= 0) _preferredPortIndex = idx;
+                        }
+                        OnStatusChanged($"GPS found on {preferred} at {baudRate} baud");
                         return true;
                     }
                 }
-                Debug.WriteLine($"    Preferred port {PreferredPort} not available — falling back to full scan");
+                GpsLog.WriteLine($"    Preferred port {preferred} not available");
             }
 
-            // Get available ports and clean them
+            if (preferredSnapshot.Count > 0)
+                GpsLog.WriteLine("    No preferred port responded — falling back to full scan");
+
+            // Get available ports and clean them. Exclude everything already tried
+            // above as a preferred entry (not just the single legacy PreferredPort).
+            var preferredSet = new HashSet<string>(preferredSnapshot, StringComparer.OrdinalIgnoreCase);
             string[] availablePorts = SerialPort.GetPortNames()
                 .Select(p => p.Trim())
                 .Where(p => !string.IsNullOrWhiteSpace(p))
-                .Where(p => !string.Equals(p, PreferredPort, StringComparison.OrdinalIgnoreCase))
+                .Where(p => !preferredSet.Contains(p))
                 .OrderBy(p => p)
                 .ToArray();
 
-            Debug.WriteLine($"Windows reports {availablePorts.Length} COM port(s) available");
+            GpsLog.WriteLine($"Windows reports {availablePorts.Length} COM port(s) available");
 
             if (availablePorts.Length == 0)
             {
-                Debug.WriteLine("ERROR: No COM ports found!");
+                GpsLog.WriteLine("ERROR: No COM ports found!");
                 return false;
             }
 
-            Debug.WriteLine("Available COM ports:");
+            GpsLog.WriteLine("Available COM ports:");
             foreach (string port in availablePorts)
             {
-                Debug.WriteLine($"  - {port}");
+                GpsLog.WriteLine($"  - {port}");
             }
 
             // Try common GPS baud rates (already declared above)
@@ -235,11 +349,12 @@ namespace SPOTTER.Controllers
             {
                 if (cancellationToken.IsCancellationRequested)
                 {
-                    Debug.WriteLine("GPS scan cancelled by user");
+                    GpsLog.WriteLine("GPS scan cancelled by user");
                     return false;
                 }
 
-                Debug.WriteLine($"\n==> Testing port: {portName}");
+                GpsLog.WriteLine($"\n==> Testing port: {portName}");
+                OnStatusChanged($"Testing {portName}...");
 
                 // Try each baud rate for this port
                 foreach (int baudRate in baudRates)
@@ -247,7 +362,7 @@ namespace SPOTTER.Controllers
                     if (cancellationToken.IsCancellationRequested)
                         return false;
 
-                    Debug.WriteLine($"    Trying {portName} at {baudRate} baud");
+                    GpsLog.WriteLine($"    Trying {portName} at {baudRate} baud");
 
                     if (await TestPort(portName, baudRate, cancellationToken))
                     {
@@ -256,47 +371,47 @@ namespace SPOTTER.Controllers
                     }
                 }
 
-                Debug.WriteLine($"    {portName} - No GPS found at any baud rate");
+                GpsLog.WriteLine($"    {portName} - No GPS found at any baud rate");
+                OnStatusChanged($"No GPS on {portName}, trying next port...");
             }
 
-            Debug.WriteLine("\nNo GPS found on any available COM port");
-            Debug.WriteLine("All available ports were tested but none responded with valid NMEA data");
+            GpsLog.WriteLine("\nNo GPS found on any available COM port");
+            GpsLog.WriteLine("All available ports were tested but none responded with valid NMEA data");
             return false;
         }
 
-        private async Task<string> ReadLineAsync(SerialPort port, CancellationToken cancellationToken, int timeoutMs)
+        /// <summary>
+        /// Reads a single NMEA line from the port with a bounded timeout.
+        ///
+        /// IMPORTANT: On .NET Framework, SerialPort.BaseStream.ReadAsync does NOT
+        /// honour either the port's ReadTimeout OR the CancellationToken — a
+        /// well-known defect. A port that opens cleanly but never emits data
+        /// (eg a Bluetooth INCOMING port with nothing connecting IN to the
+        /// tablet) will wedge BaseStream.ReadAsync forever, no matter what
+        /// timeout you set.
+        ///
+        /// The fix is to use the synchronous ReadLine() method, which DOES
+        /// honour port.ReadTimeout and throws TimeoutException reliably.
+        /// We run it on a background thread so TestPort stays async-friendly.
+        /// Note: the CancellationToken will not interrupt a blocked ReadLine —
+        /// the background thread stays blocked until ReadTimeout fires — but
+        /// since ReadTimeout is bounded (typically 3 s), the scan can only be
+        /// delayed by one port-timeout, not wedged indefinitely.
+        /// </summary>
+        private Task<string> ReadLineAsync(SerialPort port, CancellationToken cancellationToken, int timeoutMs)
         {
-            var stream = port.BaseStream;
-            var sb = new System.Text.StringBuilder();
+            // Make sure the SYNCHRONOUS ReadLine's own timeout matches what the
+            // caller asked for, overriding whatever was set at port construction.
+            port.ReadTimeout = timeoutMs;
 
-            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            return Task.Run(() =>
             {
-                linkedCts.CancelAfter(timeoutMs);
-                var token = linkedCts.Token;
-                var buffer = new byte[1];
-
-                try
-                {
-                    while (true)
-                    {
-                        int n = await stream.ReadAsync(buffer, 0, 1, token).ConfigureAwait(false);
-                        if (n == 0)
-                            continue;
-
-                        char ch = (char)buffer[0];
-                        if (ch == '\n')
-                            break;
-                        if (ch != '\r')
-                            sb.Append(ch);
-                    }
-
-                    return sb.ToString();
-                }
-                catch (OperationCanceledException)
-                {
-                    throw new TimeoutException("ReadLine timed out or was cancelled.");
-                }
-            }
+                cancellationToken.ThrowIfCancellationRequested();
+                // ReadLine will throw TimeoutException when ReadTimeout elapses
+                // with no complete line — exactly the signal TestPort needs to
+                // give up on this port and move to the next.
+                return port.ReadLine();
+            }, cancellationToken);
         }
 
         /// <summary>
@@ -308,16 +423,21 @@ namespace SPOTTER.Controllers
 
             try
             {
-                Debug.WriteLine($"        Attempting to open {portName}...");
+                GpsLog.WriteLine($"        Attempting to open {portName}...");
 
                 testPort = new SerialPort(portName, baudRate, Parity.None, 8, StopBits.One)
                 {
                     ReadTimeout = PORT_TEST_TIMEOUT_MS,
-                    WriteTimeout = PORT_TEST_TIMEOUT_MS
+                    WriteTimeout = PORT_TEST_TIMEOUT_MS,
+                    // Many Bluetooth GPS SPP channels only deliver data after
+                    // DTR is asserted. Harmless for USB and the u-blox virtual
+                    // COM, necessary for most Bluetooth modules.
+                    DtrEnable = true,
+                    RtsEnable = true
                 };
 
                 testPort.Open();
-                Debug.WriteLine($"        âœ“ Port {portName} opened successfully");
+                GpsLog.WriteLine($"        âœ“ Port {portName} opened successfully");
 
                 // Try to read several lines and look for valid NMEA
                 DateTime startTime = DateTime.Now;
@@ -326,12 +446,12 @@ namespace SPOTTER.Controllers
                 const int MAX_ATTEMPTS = 10;
 
                 while ((DateTime.Now - startTime).TotalMilliseconds < PORT_TEST_TIMEOUT_MS &&
-                       validNMEACount < 2 &&
+                       validNMEACount < MIN_VALID_NMEA_FOR_ACCEPT &&
                        readAttempts < MAX_ATTEMPTS)
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        Debug.WriteLine($"        Cancelled while testing {portName}");
+                        GpsLog.WriteLine($"        Cancelled while testing {portName}");
                         break;
                     }
 
@@ -344,65 +464,74 @@ namespace SPOTTER.Controllers
                         if (readAttempts <= 3)
                         {
                             string preview = line.Length > 60 ? line.Substring(0, 60) + "..." : line;
-                            Debug.WriteLine($"        Read [{readAttempts}]: {preview}");
+                            GpsLog.WriteLine($"        Read [{readAttempts}]: {preview}");
                         }
 
                         if (IsValidNMEASentence(line))
                         {
                             validNMEACount++;
-                            Debug.WriteLine($"        âœ“ Valid NMEA sentence! Count: {validNMEACount}");
+                            GpsLog.WriteLine($"        âœ“ Valid NMEA sentence! Count: {validNMEACount}");
                         }
                     }
                     catch (TimeoutException)
                     {
-                        Debug.WriteLine($"        Timeout reading from {portName}");
+                        GpsLog.WriteLine($"        Timeout reading from {portName}");
                         break;
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine($"        Error reading: {ex.Message}");
+                        GpsLog.WriteLine($"        Error reading: {ex.Message}");
                         break;
                     }
                 }
 
-                if (validNMEACount >= 2)
+                if (validNMEACount >= MIN_VALID_NMEA_FOR_ACCEPT)
                 {
-                    Debug.WriteLine($"        âœ“âœ“âœ“ SUCCESS! Found valid GPS on {portName} at {baudRate} baud âœ“âœ“âœ“");
+                    GpsLog.WriteLine($"        SUCCESS: valid GPS on {portName} at {baudRate} baud ({validNMEACount} NMEA sentence(s) seen)");
 
                     // Close test port
                     testPort.Close();
                     testPort.Dispose();
                     testPort = null;
 
-                    // Create fresh connection for actual use
+                    // Create fresh connection for actual use. Keep DTR/RTS
+                    // asserted here too — some Bluetooth stacks drop the SPP
+                    // data channel if DTR is released even briefly.
                     _serialPort = new SerialPort(portName, baudRate, Parity.None, 8, StopBits.One)
                     {
                         ReadTimeout = NMEA_READ_TIMEOUT_MS,
-                        WriteTimeout = NMEA_READ_TIMEOUT_MS
+                        WriteTimeout = NMEA_READ_TIMEOUT_MS,
+                        DtrEnable = true,
+                        RtsEnable = true
                     };
 
                     _serialPort.Open();
                     _connectedPort = portName;
 
-                    Debug.WriteLine($"        Fresh connection established to {portName}");
+                    // Reset watchdog state so the failover timer starts from the
+                    // moment this connection opened, not from an older session.
+                    _connectedAt = DateTime.UtcNow;
+                    _lastValidFix = DateTime.MinValue;
+
+                    GpsLog.WriteLine($"        Fresh connection established to {portName}");
                     return true;
                 }
                 else
                 {
-                    Debug.WriteLine($"        Not enough valid NMEA sentences (got {validNMEACount}, need 2)");
+                    GpsLog.WriteLine($"        Not enough valid NMEA sentences (got {validNMEACount}, need {MIN_VALID_NMEA_FOR_ACCEPT})");
                 }
             }
             catch (UnauthorizedAccessException)
             {
-                Debug.WriteLine($"        âœ— ACCESS DENIED to {portName} (port in use by another application)");
+                GpsLog.WriteLine($"        âœ— ACCESS DENIED to {portName} (port in use by another application)");
             }
             catch (IOException ex)
             {
-                Debug.WriteLine($"        âœ— IO Error on {portName}: {ex.Message}");
+                GpsLog.WriteLine($"        âœ— IO Error on {portName}: {ex.Message}");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"        âœ— Error testing {portName}: {ex.Message}");
+                GpsLog.WriteLine($"        âœ— Error testing {portName}: {ex.Message}");
             }
             finally
             {
@@ -424,12 +553,31 @@ namespace SPOTTER.Controllers
 
 
         /// <summary>
-        /// Reads and processes NMEA data from the connected serial port
+        /// Reads and processes NMEA data from the connected serial port.
+        /// Also runs the failover watchdog: if <see cref="FailoverSeconds"/> seconds
+        /// pass with no valid fix (either because none has ever been received on this
+        /// connection, or because the stream went quiet mid-session), the method
+        /// advances the preferred-port index, closes the port, and returns. The
+        /// outer <see cref="ScanAndConnectGPS"/> loop then reconnects, starting with
+        /// the NEXT preferred port — eg Bluetooth GPS after the u-blox dropped.
         /// </summary>
         private async Task ReadNMEAData(CancellationToken cancellationToken)
         {
             while (!cancellationToken.IsCancellationRequested && _serialPort != null && _serialPort.IsOpen)
             {
+                // Watchdog check: if more than FailoverSeconds have elapsed without
+                // a valid fix on this connection, give up on this port and let the
+                // outer scan loop try the next preferred source.
+                if (FailoverSeconds > 0 && ShouldFailover())
+                {
+                    string closingPort = _connectedPort;
+                    GpsLog.WriteLine($"GPS watchdog: {FailoverSeconds}s with no valid fix on {closingPort} — failing over");
+                    AdvancePreferredPortIndex();
+                    OnStatusChanged($"GPS silent on {closingPort} — switching source");
+                    CloseSerialPort();
+                    return;
+                }
+
                 try
                 {
                     string line = await Task.Run(() => _serialPort.ReadLine(), cancellationToken);
@@ -440,52 +588,114 @@ namespace SPOTTER.Controllers
                 }
                 catch (TimeoutException)
                 {
-                    // Normal timeout, continue reading
+                    // Normal timeout, continue reading (watchdog on next iteration)
                     continue;
                 }
                 catch (InvalidOperationException ex)
                 {
-                    Debug.WriteLine($"Serial port closed unexpectedly: {ex.Message}");
+                    GpsLog.WriteLine($"Serial port closed unexpectedly: {ex.Message}");
                     break;
                 }
                 catch (IOException ex)
                 {
-                    Debug.WriteLine($"IO error while reading from serial port: {ex.Message}");
+                    GpsLog.WriteLine($"IO error while reading from serial port: {ex.Message}");
                     break;
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"Unexpected error while reading NMEA data: {ex.Message}");
+                    GpsLog.WriteLine($"Unexpected error while reading NMEA data: {ex.Message}");
                     break;
                 }
             }
         }
 
         /// <summary>
-        /// Validates if a string is a proper NMEA sentence
+        /// True when the watchdog should trigger a failover on the current connection.
+        /// Uses <see cref="_lastValidFix"/> when a fix has been seen on this connection;
+        /// otherwise uses <see cref="_connectedAt"/>, so a port that opens cleanly but
+        /// never emits a valid sentence is also abandoned after the grace period.
+        /// </summary>
+        private bool ShouldFailover()
+        {
+            if (_connectedAt == DateTime.MinValue) return false;
+            DateTime referenceTime = (_lastValidFix > _connectedAt) ? _lastValidFix : _connectedAt;
+            return (DateTime.UtcNow - referenceTime).TotalSeconds > FailoverSeconds;
+        }
+
+        /// <summary>
+        /// Advances <see cref="_preferredPortIndex"/> so that the next port scan
+        /// starts with the entry AFTER the one we just abandoned. No-op when there
+        /// is less than two preferred ports configured (in a single-port setup, the
+        /// index stays at 0 and the scan simply retries the same port).
+        /// </summary>
+        private void AdvancePreferredPortIndex()
+        {
+            lock (_preferredPortsLock)
+            {
+                if (_preferredPorts.Count > 1)
+                    _preferredPortIndex = (_preferredPortIndex + 1) % _preferredPorts.Count;
+            }
+        }
+
+        /// <summary>
+        /// Validates whether a string looks like a GNSS NMEA 0183 sentence.
+        /// Uses a STRUCTURAL check rather than a hardcoded prefix list so new
+        /// talker IDs (future GNSS constellations) and legitimate variations
+        /// are accepted without code changes. The downstream parser only acts
+        /// on the three-letter sentence TYPE (GGA/RMC/GSA/GSV) so any valid
+        /// GNSS talker produces usable data.
+        ///
+        /// Accepted format:  $&lt;2 upper-case alpha talker&gt;&lt;3 upper-case alpha type&gt;,...
+        /// Accepted talkers: GP (GPS), GN (combined GNSS), GL (GLONASS),
+        ///                   GA (Galileo), BD/GB (BeiDou), QZ (QZSS),
+        ///                   GI (NavIC/IRNSS), plus any future AA–ZZ talker.
+        /// Accepted types:   GGA, RMC, GSA, GSV (needed for position + sats),
+        ///                   VTG, GLL, ZDA (common supporting sentences —
+        ///                   accepting them lets a port qualify quickly even
+        ///                   if the first full sentence is a VTG not a GGA).
+        /// Checksum is NOT verified here: some real-world GPSs ship bad
+        /// checksums under weak signal, and the downstream parsers tolerate
+        /// malformed sub-fields anyway. Keeping validation permissive at this
+        /// gate costs little — the read-loop watchdog removes a port that
+        /// turns out to be junk within FailoverSeconds.
         /// </summary>
         private bool IsValidNMEASentence(string sentence)
         {
-            if (string.IsNullOrWhiteSpace(sentence))
-                return false;
+            if (string.IsNullOrWhiteSpace(sentence)) return false;
 
             sentence = sentence.Trim();
 
-            // NMEA sentences start with $
-            if (!sentence.StartsWith("$"))
+            // Minimum shape: "$XXYYY," = 7 characters, '$' then 2+3 letters, then comma.
+            if (sentence.Length < 7 || sentence[0] != '$' || sentence[6] != ',')
                 return false;
 
-            // Check for common GPS sentence types (GP = GPS, GN = GNSS, GL = GLONASS)
-            if (sentence.StartsWith("$GPGGA") || sentence.StartsWith("$GPRMC") ||
-                sentence.StartsWith("$GPGSA") || sentence.StartsWith("$GPGSV") ||
-                sentence.StartsWith("$GNGGA") || sentence.StartsWith("$GNRMC") ||
-                sentence.StartsWith("$GNGSA") || sentence.StartsWith("$GNGSV") ||
-                sentence.StartsWith("$GLGSA") || sentence.StartsWith("$GLGSV"))
-            {
-                return true;
-            }
+            // Talker: two upper-case letters
+            if (!IsUpperAlpha(sentence[1]) || !IsUpperAlpha(sentence[2]))
+                return false;
 
-            return false;
+            // Sentence type: three upper-case letters
+            if (!IsUpperAlpha(sentence[3]) || !IsUpperAlpha(sentence[4]) || !IsUpperAlpha(sentence[5]))
+                return false;
+
+            string type = sentence.Substring(3, 3);
+            switch (type)
+            {
+                case "GGA":
+                case "RMC":
+                case "GSA":
+                case "GSV":
+                case "VTG":
+                case "GLL":
+                case "ZDA":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsUpperAlpha(char c)
+        {
+            return c >= 'A' && c <= 'Z';
         }
 
         /// <summary>
@@ -533,7 +743,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing NMEA sentence: {ex.Message}");
+                GpsLog.WriteLine($"Error parsing NMEA sentence: {ex.Message}");
             }
         }
 
@@ -597,7 +807,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing GGA: {ex.Message}");
+                GpsLog.WriteLine($"Error parsing GGA: {ex.Message}");
             }
         }
 
@@ -661,7 +871,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing RMC: {ex.Message}");
+                GpsLog.WriteLine($"Error parsing RMC: {ex.Message}");
             }
         }
 
@@ -690,7 +900,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing GSA: {ex.Message}");
+                GpsLog.WriteLine($"Error parsing GSA: {ex.Message}");
             }
         }
 
@@ -724,7 +934,7 @@ namespace SPOTTER.Controllers
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"Error parsing GSV: {ex.Message}");
+                GpsLog.WriteLine($"Error parsing GSV: {ex.Message}");
             }
         }
 
@@ -825,7 +1035,7 @@ namespace SPOTTER.Controllers
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"Error closing serial port: {ex.Message}");
+                    GpsLog.WriteLine($"Error closing serial port: {ex.Message}");
                 }
                 finally
                 {
@@ -848,7 +1058,7 @@ namespace SPOTTER.Controllers
         /// </summary>
         private void OnStatusChanged(string status)
         {
-            Debug.WriteLine($"GPS Status: {status}");
+            GpsLog.WriteLine($"GPS Status: {status}");
             StatusChanged?.Invoke(this, status);
         }
 
