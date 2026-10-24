@@ -1,4 +1,5 @@
-﻿using SPOTTER.Models;
+﻿using SPOTTER.Abstractions;
+using SPOTTER.Models;
 using SharpDX;
 using SharpDX.XInput;
 using System;
@@ -12,7 +13,7 @@ namespace SPOTTER.Controllers
     /// <summary>
     /// Handles game controller input and mapping for observation recording
     /// </summary>
-    public class GameControllerHandler
+    public class GameControllerHandler : IGamepadProvider
     {
         private Controller _controller;
         private State _currentState;

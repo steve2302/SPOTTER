@@ -1,4 +1,5 @@
-﻿using SPOTTER.Models;
+﻿using SPOTTER.Abstractions;
+using SPOTTER.Models;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,7 +15,7 @@ namespace SPOTTER.Controllers
     /// GPS Controller that reads NMEA data from serial COM ports
     /// Automatically scans and detects GPS on available COM ports
     /// </summary>
-    public class GPSController : IDisposable
+    public class GPSController : IDisposable, IGpsProvider
     {
         private SerialPort _serialPort;
         private CancellationTokenSource _cancellationTokenSource;
@@ -52,6 +53,13 @@ namespace SPOTTER.Controllers
         public LocationData CurrentLocation { get; private set; }
         public bool IsConnected => _serialPort != null && _serialPort.IsOpen;
         public string ConnectedPortName => _connectedPort;
+
+        /// <summary>
+        /// Platform-neutral alias for <see cref="ConnectedPortName"/>, used by
+        /// <see cref="IGpsProvider"/> consumers that may be looking at a
+        /// Bluetooth device name on another platform rather than a COM port.
+        /// </summary>
+        public string ConnectedDeviceName => _connectedPort;
         public int SatellitesInView => _satellitesInView;
         public int SatellitesUsed => _satellitesUsed;
 
