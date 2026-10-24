@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIDeviceFamily</key>
+	<array>
+		<!-- iPhone -->
+		<integer>1</integer>
+		<!-- iPad -->
+		<integer>2</integer>
+	</array>
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+
+	<key>UILaunchStoryboardName</key>
+	<string>MauiSplash</string>
+
+	<!--
+	    Permission prompts shown to the user by iOS the first time each
+	    capability is requested. CoreLocation and GameController are the
+	    two capabilities this app needs; the Bluetooth entries cover the
+	    wireless Xbox controller pairing (and a future Bluetooth NMEA
+	    GPS receiver).
+	-->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SPOTTER needs your location to record the GPS position of each wildlife observation.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SPOTTER needs background location access so the track log keeps recording while the screen is off or another app is in use.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>SPOTTER uses Bluetooth to connect to your Xbox or PlayStation controller, and optionally to an external GPS receiver.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>SPOTTER uses Bluetooth to connect to your Xbox or PlayStation controller, and optionally to an external GPS receiver.</string>
+
+	<!-- Keep the screen on while a survey session is active. Enforced in
+	     code via DeviceDisplay.KeepScreenOn, but declaring background modes
+	     keeps CoreLocation delivering fixes if the user tabs away. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+
+	<!-- Allow use of Xbox/PlayStation controllers via the GameController
+	     framework. GCSupportsControllerUserInteraction lets system UI like
+	     the menu button be driven by the gamepad. -->
+	<key>GCSupportsControllerUserInteraction</key>
+	<true/>
+	<key>GCSupportedGameControllers</key>
+	<array>
+		<dict>
+			<key>ProfileName</key>
+			<string>ExtendedGamepad</string>
+		</dict>
+	</array>
+</dict>
+</plist>

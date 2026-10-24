@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      iOS-only target for the first MAUI milestone. Mac Catalyst / Android
+      can be added later by appending to TargetFrameworks (e.g.
+      "net9.0-ios;net9.0-maccatalyst").
+    -->
+    <TargetFrameworks>net9.0-ios</TargetFrameworks>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>SPOTTER.Mobile</RootNamespace>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <!-- Display name on the home screen. -->
+    <ApplicationTitle>SPOTTER</ApplicationTitle>
+
+    <!--
+      iOS CFBundleIdentifier. Placeholder based on the NSW DPIRD domain;
+      replace with the real identifier (and matching provisioning profile)
+      before App Store or TestFlight distribution.
+    -->
+    <ApplicationId>au.gov.nsw.dpi.spotter</ApplicationId>
+    <ApplicationIdGuid>A3F2E9D4-7B1C-4A8E-9F3D-5E6B8C1A2D4F</ApplicationIdGuid>
+
+    <!-- CFBundleVersion / CFBundleShortVersionString. -->
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+
+    <!--
+      Minimum iOS/iPadOS. GameController framework (Xbox/PS controllers)
+      has been supported since iOS 13; CoreLocation has been there forever.
+      15.0 is a comfortable floor for a 2026 deployment.
+    -->
+    <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">15.0</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- App icon and splash. SVGs under Resources/ are consumed by the
+         MAUI image generator and converted into platform-specific assets. -->
+    <MauiIcon Include="Resources\AppIcon\appicon.svg"
+              ForegroundFile="Resources\AppIcon\appiconfg.svg"
+              Color="#2E7D32" />
+    <MauiSplashScreen Include="Resources\Splash\splash.svg"
+                      Color="#2E7D32"
+                      BaseSize="128,128" />
+    <MauiImage Include="Resources\Images\*" />
+    <MauiFont Include="Resources\Fonts\*" />
+    <MauiAsset Include="Resources\Raw\**"
+               LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="9.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SPOTTER.Core\SPOTTER.Core.csproj" />
+  </ItemGroup>
+
+</Project>

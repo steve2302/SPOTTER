@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="456" height="456" viewBox="0 0 456 456">
+    <!-- Simple binocular/spotting glyph in white on the green background.
+         Replace with real DPIRD-approved artwork before any public release. -->
+    <g fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="168" cy="228" r="72"/>
+        <circle cx="288" cy="228" r="72"/>
+        <path d="M168 156 L168 128 L204 110 L252 110 L288 128 L288 156"/>
+        <line x1="240" y1="228" x2="216" y2="228"/>
+    </g>
+</svg>
