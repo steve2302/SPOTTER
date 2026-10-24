@@ -5,41 +5,55 @@
              Title="SPOTTER">
 
     <ScrollView>
-        <VerticalStackLayout Padding="24" Spacing="16">
+        <VerticalStackLayout Padding="24" Spacing="12">
 
             <Label Text="SPOTTER"
                    FontSize="32"
                    FontAttributes="Bold"
                    HorizontalOptions="Center" />
 
-            <Label Text="Survey Program for Observing, Tracking, Tagging and Event Recording"
+            <Label Text="GPS test — Step 4"
                    FontSize="14"
-                   HorizontalOptions="Center"
-                   HorizontalTextAlignment="Center" />
+                   HorizontalOptions="Center" />
 
             <BoxView HeightRequest="1" Color="LightGray" />
 
-            <Label Text="iOS scaffold loaded"
-                   FontSize="18"
-                   FontAttributes="Bold" />
+            <HorizontalStackLayout Spacing="12">
+                <Button x:Name="StartButton"
+                        Text="Start GPS"
+                        Clicked="OnStartClicked"
+                        HorizontalOptions="FillAndExpand" />
+                <Button x:Name="StopButton"
+                        Text="Stop GPS"
+                        Clicked="OnStopClicked"
+                        IsEnabled="False"
+                        HorizontalOptions="FillAndExpand" />
+            </HorizontalStackLayout>
 
-            <Label x:Name="CoreStatusLabel"
-                   FontSize="14" />
+            <Frame BorderColor="LightGray" Padding="12" CornerRadius="6">
+                <VerticalStackLayout Spacing="6">
+                    <Label Text="Status" FontAttributes="Bold" FontSize="12" />
+                    <Label x:Name="StatusLabel" Text="Idle" FontSize="14" />
+                </VerticalStackLayout>
+            </Frame>
 
-            <Label x:Name="SessionStatusLabel"
-                   FontSize="14" />
+            <Frame BorderColor="LightGray" Padding="12" CornerRadius="6">
+                <VerticalStackLayout Spacing="6">
+                    <Label Text="Current fix" FontAttributes="Bold" FontSize="12" />
+                    <Label x:Name="LatLabel" Text="Latitude: —" FontSize="14" />
+                    <Label x:Name="LonLabel" Text="Longitude: —" FontSize="14" />
+                    <Label x:Name="AltLabel" Text="Altitude: —" FontSize="14" />
+                    <Label x:Name="BearingLabel" Text="Bearing: —" FontSize="14" />
+                    <Label x:Name="SpeedLabel" Text="Speed: —" FontSize="14" />
+                    <Label x:Name="AccLabel" Text="Horizontal accuracy: —" FontSize="14" />
+                    <Label x:Name="FixTimeLabel" Text="Fix time: —" FontSize="14" />
+                    <Label x:Name="FixCountLabel" Text="Fixes received: 0" FontSize="12" />
+                </VerticalStackLayout>
+            </Frame>
 
-            <BoxView HeightRequest="1" Color="LightGray" />
-
-            <Label Text="Next steps on this scaffold:"
-                   FontSize="14"
-                   FontAttributes="Italic" />
-            <Label Text="  · IGpsProvider implementation (CoreLocation)"
-                   FontSize="12" />
-            <Label Text="  · IGamepadProvider implementation (GameController framework)"
-                   FontSize="12" />
-            <Label Text="  · Session setup, observation entry, map, track log pages"
-                   FontSize="12" />
+            <Label Text="Note: the first Start on a fresh install triggers iOS's location-permission prompt. The app requests When-In-Use; background mode is declared for later use once a session is wired up."
+                   FontSize="11"
+                   TextColor="Gray" />
 
         </VerticalStackLayout>
     </ScrollView>

@@ -40,14 +40,17 @@ namespace SPOTTER.Models
         }
 
         /// <summary>
-        /// Checks if the location has a valid GPS fix
+        /// Checks if the location has a valid GPS fix.
+        /// SatelliteCount is not required: it is populated by the NMEA path
+        /// on Windows but is not available from Apple's CoreLocation on iOS,
+        /// so the fix is considered valid as soon as IsValid is set and
+        /// non-zero coordinates have arrived.
         /// </summary>
         public bool HasValidFix()
         {
             return IsValid &&
                    Latitude != 0 &&
-                   Longitude != 0 &&
-                   SatelliteCount > 0;
+                   Longitude != 0;
         }
 
         /// <summary>
