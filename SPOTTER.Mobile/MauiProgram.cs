@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Logging;
 using Microsoft.Maui.Devices.Sensors;
 using SPOTTER.Abstractions;
 using SPOTTER.Mobile.Services;
@@ -34,10 +33,6 @@ public static class MauiProgram
         // Pages. Registering them in DI lets the shell resolve
         // IGpsProvider through constructor injection.
         builder.Services.AddSingleton<MainPage>();
-
-#if DEBUG
-        builder.Logging.AddDebug();
-#endif
 
         return builder.Build();
     }

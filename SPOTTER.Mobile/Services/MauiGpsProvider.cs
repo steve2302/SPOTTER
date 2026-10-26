@@ -40,8 +40,13 @@ public sealed class MauiGpsProvider : IGpsProvider
 
     public event EventHandler<LocationData>? LocationUpdated;
     public event EventHandler<string>? StatusChanged;
-    public event EventHandler<SatelliteInfoEventArgs>? SatelliteInfoUpdated;
-    public event EventHandler<string>? RawNMEAReceived;
+
+    // CoreLocation does not expose satellite counts or raw NMEA sentences,
+    // so these interface events are declared with no-op accessors. The
+    // explicit add/remove keeps the compiler quiet about an "unused event"
+    // and documents the intentional omission.
+    public event EventHandler<SatelliteInfoEventArgs>? SatelliteInfoUpdated { add { } remove { } }
+    public event EventHandler<string>? RawNMEAReceived { add { } remove { } }
 
     public DateTime GetBestTime()
     {
