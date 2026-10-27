@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using CoreHaptics;
 using Foundation;
 using GameController;
 using SPOTTER.Abstractions;
@@ -9,14 +8,20 @@ namespace SPOTTER.Mobile.Services;
 /// <summary>
 /// iOS implementation of <see cref="IGamepadProvider"/> backed by Apple's
 /// GameController framework. Detects a paired Xbox One S / Series or
-/// DualShock / DualSense controller, raises <see cref="KeyPressed"/> for
-/// every button edge, and drives rumble through Core Haptics on the
-/// left and right handle locality.
+/// DualShock / DualSense controller and raises <see cref="KeyPressed"/>
+/// for every button edge.
 ///
 /// Pairing happens outside the app: iPad Settings → Bluetooth puts the
 /// controller in the OS list. When the app launches, any already-paired
 /// controller is picked up immediately. Connect / disconnect events are
 /// handled live via GCController notifications.
+///
+/// SetVibration currently triggers the iPad's own taptic engine via MAUI's
+/// cross-platform <see cref="Vibration"/> API. True on-controller rumble
+/// through Core Haptics will land in a follow-up once we lock in the
+/// Microsoft.iOS binding names for CHHapticEngine / CHHapticEvent on this
+/// workload release. For an aerial survey where the operator holds the
+/// iPad, device haptics are still a useful "GPS lost" alert.
 ///
 /// ObservationRecorded is not raised yet — the GamepadAudioConfig.csv
 /// mapping that resolves raw button names to observation strings will be
@@ -25,8 +30,6 @@ namespace SPOTTER.Mobile.Services;
 public sealed class MauiGamepadProvider : IGamepadProvider
 {
     private GCController? _controller;
-    private CHHapticEngine? _leftEngine;
-    private CHHapticEngine? _rightEngine;
     private NSObject? _didConnectObserver;
     private NSObject? _didDisconnectObserver;
 
@@ -60,15 +63,35 @@ public sealed class MauiGamepadProvider : IGamepadProvider
 
     public void SetVibration(float leftMotor, float rightMotor, int durationMs = 500)
     {
-        PlayPulse(_leftEngine, leftMotor, durationMs);
-        PlayPulse(_rightEngine, rightMotor, durationMs);
+        // The iPad has a single taptic engine — merge the two motor
+        // intensities and ignore any that are zero.
+        var intensity = Math.Max(leftMotor, rightMotor);
+        if (intensity <= 0f) return;
+
+        try
+        {
+            Vibration.Default.Vibrate(TimeSpan.FromMilliseconds(durationMs));
+        }
+        catch (FeatureNotSupportedException)
+        {
+            Debug.WriteLine("[MauiGamepadProvider] Vibration not supported on this device.");
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MauiGamepadProvider] Vibration failed: {ex}");
+        }
     }
 
     public void StopVibration()
     {
-        // CHHapticEngine patterns are short-lived and end on their own.
-        // A long-running continuous pattern would need an explicit player
-        // reference to stop; we don't play those, so nothing to do.
+        try
+        {
+            Vibration.Default.Cancel();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[MauiGamepadProvider] Vibration cancel failed: {ex}");
+        }
     }
 
     public void Dispose()
@@ -107,7 +130,6 @@ public sealed class MauiGamepadProvider : IGamepadProvider
         if (_controller is not null) return;
         _controller = controller;
 
-        StartHaptics(controller);
         WireButtons(controller);
 
         MainThread.BeginInvokeOnMainThread(() =>
@@ -116,64 +138,10 @@ public sealed class MauiGamepadProvider : IGamepadProvider
 
     private void Detach()
     {
-        try { _leftEngine?.StopWithCompletionHandler(_ => { }); } catch { }
-        try { _rightEngine?.StopWithCompletionHandler(_ => { }); } catch { }
-        _leftEngine = null;
-        _rightEngine = null;
         _controller = null;
 
         MainThread.BeginInvokeOnMainThread(() =>
             ControllerConnectionChanged?.Invoke(this, false));
-    }
-
-    // ---- haptics ---------------------------------------------------------
-
-    private void StartHaptics(GCController controller)
-    {
-        try
-        {
-            var haptics = controller.Haptics;
-            if (haptics is null) return;
-
-            _leftEngine = haptics.CreateEngine(GCHapticsLocality.LeftHandle);
-            _rightEngine = haptics.CreateEngine(GCHapticsLocality.RightHandle);
-            _leftEngine?.StartAndReturnError(out _);
-            _rightEngine?.StartAndReturnError(out _);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[MauiGamepadProvider] Haptics init failed: {ex}");
-        }
-    }
-
-    private static void PlayPulse(CHHapticEngine? engine, float intensity, int durationMs)
-    {
-        if (engine is null || intensity <= 0f) return;
-
-        try
-        {
-            var intensityP = new CHHapticEventParameter(
-                CHHapticEventParameterID.HapticIntensity, Math.Clamp(intensity, 0f, 1f));
-            var sharpnessP = new CHHapticEventParameter(
-                CHHapticEventParameterID.HapticSharpness, 0.5f);
-
-            var evt = new CHHapticEvent(
-                CHHapticEventType.HapticContinuous,
-                new[] { intensityP, sharpnessP },
-                relativeTime: 0,
-                duration: Math.Max(0.05, durationMs / 1000.0));
-
-            var pattern = CHHapticPattern.CreatePattern(
-                new[] { evt }, Array.Empty<CHHapticDynamicParameter>(), out _);
-            if (pattern is null) return;
-
-            var player = engine.CreatePlayer(pattern, out _);
-            player?.Start(0, out _);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[MauiGamepadProvider] Haptic pulse failed: {ex}");
-        }
     }
 
     // ---- button wiring ---------------------------------------------------
