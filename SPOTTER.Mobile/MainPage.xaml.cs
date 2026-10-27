@@ -4,22 +4,36 @@ using SPOTTER.Models;
 namespace SPOTTER.Mobile;
 
 /// <summary>
-/// Step 4 landing page: starts the iOS GPS provider and shows live fixes.
-/// Will be replaced by the real session-setup / logger pages once gamepad
-/// input and session flow land.
+/// Step 5 landing page: GPS fixes + Xbox-controller button events + rumble test.
+/// Will be replaced by the real session-setup / logger pages once session
+/// management lands.
 /// </summary>
 public partial class MainPage : ContentPage
 {
     private readonly IGpsProvider _gps;
+    private readonly IGamepadProvider _gamepad;
     private int _fixCount;
+    private int _buttonCount;
 
-    public MainPage(IGpsProvider gps)
+    public MainPage(IGpsProvider gps, IGamepadProvider gamepad)
     {
         InitializeComponent();
+
         _gps = gps;
-        _gps.StatusChanged += OnStatusChanged;
+        _gamepad = gamepad;
+
+        _gps.StatusChanged += OnGpsStatusChanged;
         _gps.LocationUpdated += OnLocationUpdated;
+
+        _gamepad.ControllerConnectionChanged += OnControllerConnectionChanged;
+        _gamepad.KeyPressed += OnGamepadKeyPressed;
+
+        // Reflect any controller already paired at startup.
+        if (_gamepad.IsConnected)
+            GamepadStatusLabel.Text = "Controller connected";
     }
+
+    // ---- GPS -------------------------------------------------------------
 
     private void OnStartClicked(object? sender, EventArgs e)
     {
@@ -37,7 +51,7 @@ public partial class MainPage : ContentPage
         StopButton.IsEnabled = false;
     }
 
-    private void OnStatusChanged(object? sender, string message)
+    private void OnGpsStatusChanged(object? sender, string message)
     {
         StatusLabel.Text = message;
     }
@@ -56,5 +70,28 @@ public partial class MainPage : ContentPage
         FixTimeLabel.Text = location.GpsTime.HasValue
             ? $"Fix time: {location.GpsTime.Value:HH:mm:ss} UTC"
             : "Fix time: —";
+    }
+
+    // ---- Gamepad ---------------------------------------------------------
+
+    private void OnControllerConnectionChanged(object? sender, bool connected)
+    {
+        GamepadStatusLabel.Text = connected
+            ? "Controller connected"
+            : "No controller connected";
+    }
+
+    private void OnGamepadKeyPressed(object? sender, string button)
+    {
+        _buttonCount++;
+        GamepadLastButtonLabel.Text = $"Last button: {button}";
+        GamepadCountLabel.Text = $"Button presses: {_buttonCount}";
+    }
+
+    private void OnRumbleClicked(object? sender, EventArgs e)
+    {
+        // 1 second of medium rumble on both motors — matches the Windows
+        // app's GPS-lost pattern (SetVibration(0.8, 0.8, 1000)).
+        _gamepad.SetVibration(0.8f, 0.8f, 1000);
     }
 }

@@ -30,6 +30,12 @@ public static class MauiProgram
         // SerialPort-backed GPSController instead.
         builder.Services.AddSingleton<IGpsProvider, MauiGpsProvider>();
 
+        // Platform-neutral gamepad contract. iOS uses Apple's
+        // GameController framework (Xbox / PlayStation controllers over
+        // Bluetooth); a WinForms host would register the XInput-backed
+        // GameControllerHandler instead.
+        builder.Services.AddSingleton<IGamepadProvider, MauiGamepadProvider>();
+
         // Pages. Registering them in DI lets the shell resolve
         // IGpsProvider through constructor injection.
         builder.Services.AddSingleton<MainPage>();

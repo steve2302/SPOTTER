@@ -12,12 +12,13 @@
                    FontAttributes="Bold"
                    HorizontalOptions="Center" />
 
-            <Label Text="GPS test — Step 4"
+            <Label Text="GPS + gamepad test — Step 5"
                    FontSize="14"
                    HorizontalOptions="Center" />
 
             <BoxView HeightRequest="1" Color="LightGray" />
 
+            <!-- ========= GPS ========= -->
             <HorizontalStackLayout Spacing="12">
                 <Button x:Name="StartButton"
                         Text="Start GPS"
@@ -32,7 +33,7 @@
 
             <Frame BorderColor="LightGray" Padding="12" CornerRadius="6">
                 <VerticalStackLayout Spacing="6">
-                    <Label Text="Status" FontAttributes="Bold" FontSize="12" />
+                    <Label Text="GPS status" FontAttributes="Bold" FontSize="12" />
                     <Label x:Name="StatusLabel" Text="Idle" FontSize="14" />
                 </VerticalStackLayout>
             </Frame>
@@ -51,7 +52,23 @@
                 </VerticalStackLayout>
             </Frame>
 
-            <Label Text="Note: the first Start on a fresh install triggers iOS's location-permission prompt. The app requests When-In-Use; background mode is declared for later use once a session is wired up."
+            <BoxView HeightRequest="1" Color="LightGray" />
+
+            <!-- ========= Gamepad ========= -->
+            <Frame BorderColor="LightGray" Padding="12" CornerRadius="6">
+                <VerticalStackLayout Spacing="6">
+                    <Label Text="Gamepad" FontAttributes="Bold" FontSize="12" />
+                    <Label x:Name="GamepadStatusLabel" Text="No controller connected" FontSize="14" />
+                    <Label x:Name="GamepadLastButtonLabel" Text="Last button: —" FontSize="14" />
+                    <Label x:Name="GamepadCountLabel" Text="Button presses: 0" FontSize="12" />
+                </VerticalStackLayout>
+            </Frame>
+
+            <Button x:Name="RumbleButton"
+                    Text="Test rumble (1 second)"
+                    Clicked="OnRumbleClicked" />
+
+            <Label Text="To connect your Xbox One S controller: on the controller, hold the sync button on top until the Xbox light flashes. On iPad, open Settings → Bluetooth, tap the Xbox Wireless Controller when it appears, pair, then return here. In the Mac simulator, pair the controller to the Mac itself under System Settings → Bluetooth — the simulator will pass it through."
                    FontSize="11"
                    TextColor="Gray" />
 
